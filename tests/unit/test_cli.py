@@ -14,6 +14,7 @@ def test_build_parser_exposes_expected_subcommands() -> None:
         "collect-daily-bars",
         "control",
         "daily-inspection",
+        "account-performance",
         "run-once",
         "run-continuous",
         "market-open",

@@ -138,6 +138,31 @@ def test_paper_broker_snapshot_restores_open_orders_and_positions() -> None:
     assert restored.snapshot().cash == Decimal("1055")
 
 
+def test_paper_broker_returns_account_performance() -> None:
+    broker = PaperBroker(Decimal("1000"))
+    broker.advance_bar(_bar("2026-04-13T09:00:00+09:00", close="100"))
+    broker.submit_order(
+        OrderRequest(
+            request_id="buy-1",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=5,
+            limit_price=Decimal("100"),
+            requested_at=_dt("2026-04-13T09:00:00+09:00"),
+        )
+    )
+    broker.advance_bar(_bar("2026-04-13T09:30:00+09:00", close="110"))
+
+    performance = broker.get_account_performance()
+
+    assert performance.total_purchase_amount == Decimal("500")
+    assert performance.total_evaluation_amount == Decimal("550")
+    assert performance.total_profit_loss == Decimal("50")
+    assert performance.total_profit_loss_rate == Decimal("10.0")
+    assert performance.cash_available == Decimal("500")
+    assert performance.holdings[0].profit_loss_rate == Decimal("10.0")
+
+
 def test_paper_broker_defers_fill_until_bar_at_or_after_order_time() -> None:
     broker = PaperBroker(Decimal("1000"))
     broker.advance_bar(_bar("2026-04-13T09:00:00+09:00", close="100", low="99"))

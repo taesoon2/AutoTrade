@@ -16,6 +16,7 @@ from autotrade.broker import KoreaInvestmentBarSource
 from autotrade.broker import KoreaInvestmentBrokerReader
 from autotrade.broker import KoreaInvestmentBrokerTrader
 from autotrade.broker import PaperBroker
+from autotrade.common import AccountPerformance
 from autotrade.config import AppSettings
 from autotrade.config import ConfigError
 from autotrade.config import TelegramSettings
@@ -403,6 +404,25 @@ def _handle_market_close(args: argparse.Namespace) -> int:
     return EXIT_CODE_SUCCESS
 
 
+def _handle_account_performance(args: argparse.Namespace) -> int:
+    logger.info("계좌 수익률 조회를 준비합니다.")
+    settings = _load_runtime_settings(args.env_file)
+    if settings is None:
+        return EXIT_CODE_CONFIGURATION_ERROR
+    try:
+        broker_reader, _ = _build_broker_clients(
+            settings,
+            paper_cash_override=args.paper_cash,
+        )
+        account_performance = broker_reader.get_account_performance()
+    except Exception as exc:
+        _log_operation_failure("account-performance", exc)
+        return EXIT_CODE_OPERATION_FAILED
+
+    print(render_account_performance(account_performance))
+    return EXIT_CODE_SUCCESS
+
+
 def _handle_weekly_review(args: argparse.Namespace) -> int:
     environment = _load_environment(args.env_file)
     if environment is None:
@@ -438,6 +458,46 @@ def _handle_weekly_review(args: argparse.Namespace) -> int:
         _close_notifier(notifier)
     print(weekly_review.report_path)
     return EXIT_CODE_SUCCESS
+
+
+def render_account_performance(account_performance: AccountPerformance) -> str:
+    lines = [
+        f"계좌 수익률: {_format_rate(account_performance.total_profit_loss_rate)}",
+        f"평가손익: {_format_krw(account_performance.total_profit_loss, signed=True)}",
+        f"총매입금액: {_format_krw(account_performance.total_purchase_amount)}",
+        f"총평가금액: {_format_krw(account_performance.total_evaluation_amount)}",
+        f"주문가능금액: {_format_krw(account_performance.cash_available)}",
+        f"보유종목수: {len(account_performance.holdings)}",
+    ]
+    if account_performance.holdings:
+        lines.append("보유종목:")
+        for holding in account_performance.holdings:
+            lines.append(
+                " ".join(
+                    (
+                        f"- {holding.symbol}",
+                        f"quantity={holding.quantity}",
+                        f"average_price={_format_krw(holding.average_price)}",
+                        f"current_price={_format_krw(holding.current_price)}",
+                        "profit_loss="
+                        f"{_format_krw(holding.profit_loss, signed=True)}",
+                        f"profit_loss_rate={_format_rate(holding.profit_loss_rate)}",
+                    )
+                )
+            )
+    return "\n".join(lines)
+
+
+def _format_krw(value: Decimal, *, signed: bool = False) -> str:
+    rounded = value.quantize(Decimal("1"))
+    sign = "+" if signed and rounded > 0 else ""
+    return f"{sign}{rounded:,.0f}원"
+
+
+def _format_rate(value: Decimal) -> str:
+    rounded = value.quantize(Decimal("0.01"))
+    sign = "+" if rounded > 0 else ""
+    return f"{sign}{rounded:.2f}%"
 
 
 def _handle_collect_daily_bars(args: argparse.Namespace) -> int:
@@ -1079,6 +1139,7 @@ __all__ = [
     "_handle_control_pause",
     "_handle_control_resume",
     "_handle_daily_inspection",
+    "_handle_account_performance",
     "_handle_market_close",
     "_handle_market_open",
     "_handle_run_continuous",
@@ -1096,5 +1157,6 @@ __all__ = [
     "_resolve_incremental_collection_start",
     "_run_market_close_flow",
     "_run_resume_maintenance",
+    "render_account_performance",
     "timedelta",
 ]

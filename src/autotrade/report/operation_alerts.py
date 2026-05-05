@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from autotrade.common import AccountPerformance
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
 from autotrade.common import OrderStatus
@@ -101,6 +102,7 @@ def build_daily_run_alert(
     report: DailyRunReport,
     *,
     created_at: datetime,
+    account_performance: AccountPerformance | None = None,
 ) -> NotificationMessage:
     _require_aware_datetime("created_at", created_at)
 
@@ -122,6 +124,15 @@ def build_daily_run_alert(
     failures = [result.job_name for result in report.job_results if not result.success]
     if failures:
         lines.append(f"failed_job_names={','.join(failures)}")
+    if account_performance is not None:
+        lines.extend(
+            (
+                f"account_profit_loss={account_performance.total_profit_loss}",
+                "account_profit_loss_rate="
+                f"{account_performance.total_profit_loss_rate}",
+                f"account_holdings={len(account_performance.holdings)}",
+            )
+        )
 
     return NotificationMessage(
         created_at=created_at,
@@ -136,10 +147,12 @@ def publish_daily_run_alert(
     report: DailyRunReport,
     *,
     created_at: datetime | None = None,
+    account_performance: AccountPerformance | None = None,
 ) -> NotificationMessage:
     notification = build_daily_run_alert(
         report,
         created_at=created_at or datetime.now(KST),
+        account_performance=account_performance,
     )
     notifier.send(notification)
     return notification

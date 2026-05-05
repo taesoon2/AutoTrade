@@ -28,9 +28,11 @@ from autotrade.broker.korea_investment import KIS_LIVE_MIN_REQUEST_INTERVAL_SECO
 from autotrade.broker.korea_investment import KIS_TRANSPORT_RETRY_DELAYS_SECONDS
 from autotrade.broker.korea_investment import _resolve_min_request_interval_seconds
 from autotrade.broker.korea_investment import _split_account
+from autotrade.common import AccountPerformance
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
 from autotrade.common import Holding
+from autotrade.common import HoldingPerformance
 from autotrade.common import OrderAmendRequest
 from autotrade.common import OrderCapacity
 from autotrade.common import OrderCancelRequest
@@ -42,6 +44,14 @@ from autotrade.config.models import BrokerEnvironment
 from autotrade.config import BrokerSettings
 from autotrade.data import Bar
 from autotrade.data import Timeframe
+
+
+@pytest.fixture(autouse=True)
+def isolate_kis_token_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
 
 def test_korea_investment_broker_reader_returns_standard_models() -> None:
@@ -162,6 +172,85 @@ def test_korea_investment_broker_reader_returns_standard_models() -> None:
         "CMA_EVLU_AMT_ICLD_YN": ["N"],
         "OVRS_ICLD_YN": ["N"],
     }
+
+
+def test_korea_investment_broker_reader_returns_account_performance() -> None:
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            ("GET", "/uapi/domestic-stock/v1/trading/inquire-balance"): json_response(
+                {
+                    "rt_cd": "0",
+                    "output1": [
+                        {
+                            "pdno": "357870",
+                            "hldg_qty": "2",
+                            "pchs_avg_pric": "10000",
+                            "prpr": "10100",
+                            "pchs_amt": "20000",
+                            "evlu_amt": "20200",
+                            "evlu_pfls_amt": "200",
+                            "evlu_pfls_rt": "1.00",
+                        },
+                        {
+                            "pdno": "069500",
+                            "hldg_qty": "1",
+                            "pchs_avg_pric": "9000",
+                            "prpr": "9500",
+                            "pchs_amt": "9000",
+                            "evlu_amt": "9500",
+                            "evlu_pfls_amt": "500",
+                            "evlu_pfls_rt": "5.56",
+                        },
+                    ],
+                    "output2": [
+                        {
+                            "pchs_amt_smtl_amt": "29000",
+                            "evlu_amt_smtl_amt": "29700",
+                            "evlu_pfls_smtl_amt": "700",
+                            "evlu_pfls_rt": "2.41",
+                            "dnca_tot_amt": "133250",
+                        }
+                    ],
+                },
+            ),
+        },
+    )
+    reader = KoreaInvestmentBrokerReader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 11, 9, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+
+    assert reader.get_account_performance() == AccountPerformance(
+        total_purchase_amount=Decimal("29000"),
+        total_evaluation_amount=Decimal("29700"),
+        total_profit_loss=Decimal("700"),
+        total_profit_loss_rate=Decimal("2.41"),
+        cash_available=Decimal("133250"),
+        holdings=(
+            HoldingPerformance(
+                symbol="069500",
+                quantity=1,
+                average_price=Decimal("9000"),
+                current_price=Decimal("9500"),
+                purchase_amount=Decimal("9000"),
+                evaluation_amount=Decimal("9500"),
+                profit_loss=Decimal("500"),
+                profit_loss_rate=Decimal("5.56"),
+            ),
+            HoldingPerformance(
+                symbol="357870",
+                quantity=2,
+                average_price=Decimal("10000"),
+                current_price=Decimal("10100"),
+                purchase_amount=Decimal("20000"),
+                evaluation_amount=Decimal("20200"),
+                profit_loss=Decimal("200"),
+                profit_loss_rate=Decimal("1.00"),
+            ),
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -989,6 +1078,38 @@ def test_korea_investment_broker_trader_uses_filtered_summary_for_missing_fill_r
         ),
     )
     assert parse_qs(urlsplit(transport.requests[1].url).query)["ODNO"] == ["11960"]
+
+
+def test_korea_investment_broker_trader_keeps_tracked_order_when_history_missing() -> (
+    None
+):
+    transport = RecordingTransport(
+        {
+            ("POST", "/oauth2/tokenP"): json_response({"access_token": "token-123"}),
+            (
+                "GET",
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+            ): json_response({"rt_cd": "0", "output1": [], "output2": {}}),
+        }
+    )
+    trader = KoreaInvestmentBrokerTrader(
+        _make_settings(),
+        transport=transport,
+        clock=lambda: datetime(2026, 4, 24, 10, 30, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    order = ExecutionOrder(
+        order_id="0000011960",
+        symbol="069500",
+        side=OrderSide.BUY,
+        quantity=1,
+        limit_price=Decimal("98100"),
+        status=OrderStatus.ACKNOWLEDGED,
+        created_at=datetime(2026, 4, 24, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        updated_at=datetime(2026, 4, 24, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        filled_quantity=0,
+    )
+
+    assert trader.get_fills_for_order(order) == ()
 
 
 def test_korea_investment_broker_trader_returns_realtime_fill_notice_without_history() -> (

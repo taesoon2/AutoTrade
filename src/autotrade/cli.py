@@ -121,6 +121,30 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     market_close_parser.set_defaults(handler=operations._handle_market_close)
 
+    account_performance_parser = subparsers.add_parser(
+        "account-performance",
+        help="현재 계좌의 평가손익과 수익률을 조회합니다.",
+    )
+    account_performance_parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=operations.DEFAULT_ENV_FILE,
+        help="설정에 사용할 .env 파일 경로입니다. 기본값은 저장소 루트의 .env입니다.",
+    )
+    account_performance_parser.add_argument(
+        "--paper-cash",
+        type=Decimal,
+        default=None,
+        help=(
+            "AUTOTRADE_BROKER_ENV=paper 이고 "
+            "AUTOTRADE_PAPER_TRADING_MODE=simulate 일 때만 내부 PaperBroker "
+            "초기 현금을 수동 지정합니다."
+        ),
+    )
+    account_performance_parser.set_defaults(
+        handler=operations._handle_account_performance
+    )
+
     weekly_review_parser = subparsers.add_parser(
         "weekly-review",
         help="주간 리뷰 파일을 생성하고 필요하면 알림을 발행합니다.",

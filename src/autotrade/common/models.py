@@ -96,6 +96,47 @@ class Holding:
 
 
 @dataclass(frozen=True, slots=True)
+class HoldingPerformance:
+    symbol: str
+    quantity: int
+    average_price: Decimal
+    current_price: Decimal
+    purchase_amount: Decimal
+    evaluation_amount: Decimal
+    profit_loss: Decimal
+    profit_loss_rate: Decimal
+
+    def __post_init__(self) -> None:
+        _require_non_empty_symbol(self.symbol)
+        _require_non_negative_int("quantity", self.quantity)
+        _require_non_negative_decimal("average_price", self.average_price)
+        _require_non_negative_decimal("current_price", self.current_price)
+        _require_non_negative_decimal("purchase_amount", self.purchase_amount)
+        _require_non_negative_decimal("evaluation_amount", self.evaluation_amount)
+
+
+@dataclass(frozen=True, slots=True)
+class AccountPerformance:
+    total_purchase_amount: Decimal
+    total_evaluation_amount: Decimal
+    total_profit_loss: Decimal
+    total_profit_loss_rate: Decimal
+    cash_available: Decimal
+    holdings: tuple[HoldingPerformance, ...]
+
+    def __post_init__(self) -> None:
+        _require_non_negative_decimal(
+            "total_purchase_amount",
+            self.total_purchase_amount,
+        )
+        _require_non_negative_decimal(
+            "total_evaluation_amount",
+            self.total_evaluation_amount,
+        )
+        _require_non_negative_decimal("cash_available", self.cash_available)
+
+
+@dataclass(frozen=True, slots=True)
 class OrderCapacity:
     symbol: str
     order_price: Decimal

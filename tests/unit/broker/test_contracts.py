@@ -17,9 +17,11 @@ from autotrade.broker.korea_investment import KoreaInvestmentBrokerTrader
 from autotrade.broker import normalize_holding
 from autotrade.broker import normalize_order_capacity
 from autotrade.broker import normalize_quote
+from autotrade.common import AccountPerformance
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
 from autotrade.common import Holding
+from autotrade.common import HoldingPerformance
 from autotrade.common import OrderAmendRequest
 from autotrade.common import OrderCancelRequest
 from autotrade.common import OrderCapacity
@@ -128,12 +130,14 @@ def test_broker_reader_contract_returns_standard_models() -> None:
 
     quote = reader.get_quote("069500")
     holdings = reader.get_holdings()
+    account_performance = reader.get_account_performance()
     capacity = reader.get_order_capacity("069500", Decimal("10250"))
 
     assert isinstance(quote, Quote)
     assert isinstance(holdings, tuple)
     assert holdings == tuple(sorted(holdings, key=lambda holding: holding.symbol))
     assert all(isinstance(holding, Holding) for holding in holdings)
+    assert isinstance(account_performance, AccountPerformance)
     assert isinstance(capacity, OrderCapacity)
     assert capacity.order_price == Decimal("10250")
 
@@ -154,6 +158,7 @@ def test_korea_investment_broker_reader_conforms_to_contract() -> None:
     assert isinstance(reader, BrokerReader)
     assert isinstance(reader.get_quote("069500"), Quote)
     assert isinstance(reader.get_holdings(), tuple)
+    assert isinstance(reader.get_account_performance(), AccountPerformance)
     assert isinstance(
         reader.get_order_capacity("069500", Decimal("10250")),
         OrderCapacity,
@@ -316,6 +321,37 @@ class DummyBrokerReader:
             },
         )
 
+    def get_account_performance(self) -> AccountPerformance:
+        return AccountPerformance(
+            total_purchase_amount=Decimal("29000"),
+            total_evaluation_amount=Decimal("29700"),
+            total_profit_loss=Decimal("700"),
+            total_profit_loss_rate=Decimal("2.413793103448275862068965517"),
+            cash_available=Decimal("133250"),
+            holdings=(
+                HoldingPerformance(
+                    symbol="069500",
+                    quantity=1,
+                    average_price=Decimal("9000"),
+                    current_price=Decimal("9500"),
+                    purchase_amount=Decimal("9000"),
+                    evaluation_amount=Decimal("9500"),
+                    profit_loss=Decimal("500"),
+                    profit_loss_rate=Decimal("5.555555555555555555555555556"),
+                ),
+                HoldingPerformance(
+                    symbol="357870",
+                    quantity=2,
+                    average_price=Decimal("10000"),
+                    current_price=Decimal("10100"),
+                    purchase_amount=Decimal("20000"),
+                    evaluation_amount=Decimal("20200"),
+                    profit_loss=Decimal("200"),
+                    profit_loss_rate=Decimal("1.00"),
+                ),
+            ),
+        )
+
 
 class DummyBrokerTrader:
     def submit_order(self, request: OrderRequest) -> ExecutionOrder:
@@ -411,8 +447,19 @@ class _ContractTransport:
                                 "hldg_qty": "1",
                                 "pchs_avg_pric": "9000",
                                 "prpr": "9500",
+                                "pchs_amt": "9000",
+                                "evlu_amt": "9500",
+                                "evlu_pfls_amt": "500",
+                                "evlu_pfls_rt": "5.56",
                             }
                         ],
+                        "output2": {
+                            "pchs_amt_smtl_amt": "9000",
+                            "evlu_amt_smtl_amt": "9500",
+                            "evlu_pfls_smtl_amt": "500",
+                            "evlu_pfls_rt": "5.56",
+                            "dnca_tot_amt": "133250",
+                        },
                     },
                 ).encode("utf-8"),
             )

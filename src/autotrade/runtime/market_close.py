@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from collections.abc import Callable
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from datetime import date
@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 
 from autotrade.broker import BrokerReader
+from autotrade.common import AccountPerformance
 from autotrade.common import ExecutionFill
 from autotrade.common import OrderStatus
 from autotrade.config import AppSettings
@@ -87,26 +88,35 @@ class MarketCloseResult:
     daily_run_report_path: Path
     inspection_report_path: Path
     next_day_preparation_path: Path
+    account_profit_loss: Decimal | None = None
+    account_profit_loss_rate: Decimal | None = None
 
     def __post_init__(self) -> None:
         _require_aware_datetime("generated_at", self.generated_at)
 
     def render_summary(self) -> str:
-        return " ".join(
-            (
-                f"trading_day={self.trading_day.isoformat()}",
-                f"total_jobs={self.total_jobs}",
-                f"failed_jobs={self.failed_jobs}",
-                f"order_snapshots={self.order_snapshots}",
-                f"daily_fills={self.daily_fills}",
-                f"holdings={self.holdings}",
-                f"open_orders={self.open_orders}",
-                f"rejected_orders={self.rejected_orders}",
+        parts = [
+            f"trading_day={self.trading_day.isoformat()}",
+            f"total_jobs={self.total_jobs}",
+            f"failed_jobs={self.failed_jobs}",
+            f"order_snapshots={self.order_snapshots}",
+            f"daily_fills={self.daily_fills}",
+            f"holdings={self.holdings}",
+            f"open_orders={self.open_orders}",
+            f"rejected_orders={self.rejected_orders}",
+        ]
+        if self.account_profit_loss is not None:
+            parts.append(f"account_profit_loss={self.account_profit_loss}")
+        if self.account_profit_loss_rate is not None:
+            parts.append(f"account_profit_loss_rate={self.account_profit_loss_rate}")
+        parts.extend(
+            [
                 f"daily_report={self.daily_run_report_path.name}",
                 f"inspection_report={self.inspection_report_path.name}",
                 f"next_day_preparation={self.next_day_preparation_path.name}",
-            )
+            ]
         )
+        return " ".join(parts)
 
 
 @dataclass(slots=True)
@@ -211,12 +221,21 @@ class MarketCloseRuntime:
         job_results = load_job_run_results(self.settings.log_dir, trading_day)
         snapshots = self.state_store.list_snapshots()
         holdings_error: str | None = None
+        account_performance: AccountPerformance | None = None
         try:
-            holdings = self.broker_reader.get_holdings()
-        except Exception as exc:
-            holdings = ()
-            holdings_error = str(exc)
-            logger.exception("장 종료 정리용 잔고 조회에 실패했습니다.")
+            account_performance = self.broker_reader.get_account_performance()
+            holdings = tuple(
+                holding
+                for holding in account_performance.holdings
+                if holding.quantity > 0
+            )
+        except Exception:
+            try:
+                holdings = self.broker_reader.get_holdings()
+            except Exception as holdings_exc:
+                holdings = ()
+                holdings_error = str(holdings_exc)
+                logger.exception("장 종료 정리용 계좌 성과/잔고 조회에 실패했습니다.")
         daily_snapshots = _daily_order_snapshots(snapshots, trading_day=trading_day)
         daily_fills = _daily_fills(snapshots, trading_day=trading_day)
         open_orders = _open_order_snapshots(snapshots)
@@ -257,6 +276,7 @@ class MarketCloseRuntime:
             self.notifier,
             daily_report,
             created_at=finished_at,
+            account_performance=account_performance,
         )
         next_day = _next_trading_day(trading_day, calendar=self.calendar)
         next_day_preparation = _build_next_day_preparation(
@@ -289,6 +309,7 @@ class MarketCloseRuntime:
             rejected_orders=rejected_orders,
             safe_stop_reason=safe_stop_reason,
             safe_stop_detail=safe_stop_detail,
+            account_performance=account_performance,
         )
         inspection_report_path = write_daily_inspection_report(
             self.settings.log_dir,
@@ -307,6 +328,16 @@ class MarketCloseRuntime:
             daily_run_report_path=daily_report_path,
             inspection_report_path=inspection_report_path,
             next_day_preparation_path=next_day_preparation_path,
+            account_profit_loss=(
+                None
+                if account_performance is None
+                else account_performance.total_profit_loss
+            ),
+            account_profit_loss_rate=(
+                None
+                if account_performance is None
+                else account_performance.total_profit_loss_rate
+            ),
         )
 
     def _write_failure_artifacts(
@@ -487,6 +518,7 @@ def _build_market_close_inspection_report(
     rejected_orders: tuple[OrderExecutionSnapshot, ...],
     safe_stop_reason: str | None,
     safe_stop_detail: str | None,
+    account_performance: AccountPerformance | None = None,
 ) -> DailyInspectionReport:
     items = _merged_inspection_items(
         log_dir=log_dir,
@@ -563,6 +595,15 @@ def _build_market_close_inspection_report(
             detail=(
                 f"daily_report={daily_report_path.name} "
                 f"failed_jobs={daily_report.failed_jobs}"
+                + (
+                    ""
+                    if account_performance is None
+                    else (
+                        f" account_profit_loss={account_performance.total_profit_loss}"
+                        " account_profit_loss_rate="
+                        f"{account_performance.total_profit_loss_rate}"
+                    )
+                )
             ),
         ),
         (InspectionWindow.POST_MARKET, "오류 로그 점검"): DailyInspectionItem(

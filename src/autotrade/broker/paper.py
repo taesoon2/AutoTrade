@@ -5,9 +5,11 @@ from decimal import Decimal
 
 from autotrade.broker.readers import BrokerReader
 from autotrade.broker.trading import BrokerTrader
+from autotrade.common import AccountPerformance
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
 from autotrade.common import Holding
+from autotrade.common import HoldingPerformance
 from autotrade.common import OrderAmendRequest
 from autotrade.common import OrderCancelRequest
 from autotrade.common import OrderCapacity
@@ -153,6 +155,54 @@ class PaperBroker(BrokerReader, BrokerTrader):
                 )
             )
         return tuple(holdings)
+
+    def get_account_performance(self) -> AccountPerformance:
+        holdings = []
+        total_purchase_amount = ZERO
+        total_evaluation_amount = ZERO
+        total_profit_loss = ZERO
+        for symbol, position in sorted(self._positions.items()):
+            if position.quantity <= 0:
+                continue
+            bar = self._market_bars.get(symbol)
+            current_price = (
+                position.average_price if bar is None else bar.close
+            )
+            quantity = Decimal(position.quantity)
+            purchase_amount = position.average_price * quantity
+            evaluation_amount = current_price * quantity
+            profit_loss = evaluation_amount - purchase_amount
+            profit_loss_rate = _calculate_profit_loss_rate(
+                profit_loss,
+                purchase_amount,
+            )
+            holdings.append(
+                HoldingPerformance(
+                    symbol=symbol,
+                    quantity=position.quantity,
+                    average_price=position.average_price,
+                    current_price=current_price,
+                    purchase_amount=purchase_amount,
+                    evaluation_amount=evaluation_amount,
+                    profit_loss=profit_loss,
+                    profit_loss_rate=profit_loss_rate,
+                )
+            )
+            total_purchase_amount += purchase_amount
+            total_evaluation_amount += evaluation_amount
+            total_profit_loss += profit_loss
+
+        return AccountPerformance(
+            total_purchase_amount=total_purchase_amount,
+            total_evaluation_amount=total_evaluation_amount,
+            total_profit_loss=total_profit_loss,
+            total_profit_loss_rate=_calculate_profit_loss_rate(
+                total_profit_loss,
+                total_purchase_amount,
+            ),
+            cash_available=self._cash,
+            holdings=tuple(holdings),
+        )
 
     def get_order_capacity(
         self,
@@ -420,3 +470,12 @@ class PaperBroker(BrokerReader, BrokerTrader):
         if order.side is OrderSide.BUY:
             return min(order.limit_price, bar.close)
         return max(order.limit_price, bar.close)
+
+
+def _calculate_profit_loss_rate(
+    profit_loss: Decimal,
+    purchase_amount: Decimal,
+) -> Decimal:
+    if purchase_amount == ZERO:
+        return ZERO
+    return (profit_loss / purchase_amount) * Decimal("100")

@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Protocol
 from typing import runtime_checkable
 
+from autotrade.common import AccountPerformance
 from autotrade.common import Holding
 from autotrade.common import OrderCapacity
 from autotrade.common import Quote
@@ -20,6 +21,8 @@ class BrokerReader(Protocol):
     def get_quote(self, symbol: str) -> Quote: ...
 
     def get_holdings(self) -> tuple[Holding, ...]: ...
+
+    def get_account_performance(self) -> AccountPerformance: ...
 
     def get_order_capacity(
         self,

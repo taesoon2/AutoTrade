@@ -40,9 +40,11 @@ from autotrade.broker.normalization import normalize_order_capacity
 from autotrade.broker.normalization import normalize_quote
 from autotrade.broker.readers import BrokerReader
 from autotrade.broker.trading import BrokerTrader
+from autotrade.common import AccountPerformance
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
 from autotrade.common import Holding
+from autotrade.common import HoldingPerformance
 from autotrade.common import OrderAmendRequest
 from autotrade.common import OrderCapacity
 from autotrade.common import OrderCancelRequest
@@ -1059,47 +1061,89 @@ class KoreaInvestmentBrokerReader(_KoreaInvestmentApiClient, BrokerReader):
 
     def get_holdings(self) -> tuple[Holding, ...]:
         try:
-            payload = self._request_json(
-                "GET",
-                KIS_BALANCE_PATH,
-                params={
-                    "CANO": self._cano,
-                    "ACNT_PRDT_CD": self._account_product_code,
-                    "AFHR_FLPR_YN": "N",
-                    "OFL_YN": "",
-                    "INQR_DVSN": "02",
-                    "UNPR_DVSN": "01",
-                    "FUND_STTL_ICLD_YN": "N",
-                    "FNCG_AMT_AUTO_RDPT_YN": "N",
-                    "PRCS_DVSN": "00",
-                    "CTX_AREA_FK100": "",
-                    "CTX_AREA_NK100": "",
-                },
-                tr_id=self._balance_tr_id,
-            )
+            return _parse_balance_holdings(self._request_balance_payload())
+        except BrokerNormalizationError as error:
+            raise KoreaInvestmentBrokerError(str(error)) from error
+
+    def get_account_performance(self) -> AccountPerformance:
+        try:
+            payload = self._request_balance_payload()
             rows = _require_sequence(payload, "output1")
-            holdings: list[Holding] = []
+            summary = _balance_summary_mapping(payload)
+            holding_performance_list: list[HoldingPerformance] = []
             for row in rows:
                 if not isinstance(row, Mapping):
                     raise KoreaInvestmentBrokerError("output1 entries must be mappings")
-
-                quantity = _coerce_int(row.get("hldg_qty"), field_name="hldg_qty")
-                if quantity <= 0:
-                    continue
-
-                holdings.append(
-                    normalize_holding(
-                        {
-                            "symbol": _coerce_string(
-                                row.get("pdno"), field_name="pdno"
-                            ),
-                            "quantity": quantity,
-                            "average_price": row.get("pchs_avg_pric"),
-                            "current_price": row.get("prpr"),
-                        },
-                    ),
+                performance = _parse_holding_performance(row)
+                if performance is not None:
+                    holding_performance_list.append(performance)
+            holding_performances = tuple(
+                sorted(
+                    holding_performance_list,
+                    key=lambda holding: holding.symbol,
                 )
-            return tuple(sorted(holdings, key=lambda holding: holding.symbol))
+            )
+            return AccountPerformance(
+                total_purchase_amount=_summary_decimal(
+                    summary,
+                    "pchs_amt_smtl_amt",
+                    fallback=sum(
+                        (
+                            holding.purchase_amount
+                            for holding in holding_performances
+                        ),
+                        start=Decimal("0"),
+                    ),
+                ),
+                total_evaluation_amount=_summary_decimal(
+                    summary,
+                    "evlu_amt_smtl_amt",
+                    "scts_evlu_amt",
+                    fallback=sum(
+                        (
+                            holding.evaluation_amount
+                            for holding in holding_performances
+                        ),
+                        start=Decimal("0"),
+                    ),
+                ),
+                total_profit_loss=_summary_decimal(
+                    summary,
+                    "evlu_pfls_smtl_amt",
+                    fallback=sum(
+                        (holding.profit_loss for holding in holding_performances),
+                        start=Decimal("0"),
+                    ),
+                ),
+                total_profit_loss_rate=_summary_decimal(
+                    summary,
+                    "evlu_pfls_rt",
+                    fallback=_calculate_profit_loss_rate(
+                        sum(
+                            (
+                                holding.profit_loss
+                                for holding in holding_performances
+                            ),
+                            start=Decimal("0"),
+                        ),
+                        sum(
+                            (
+                                holding.purchase_amount
+                                for holding in holding_performances
+                            ),
+                            start=Decimal("0"),
+                        ),
+                    ),
+                ),
+                cash_available=_summary_decimal(
+                    summary,
+                    "dnca_tot_amt",
+                    "nxdy_excc_amt",
+                    "prvs_rcdl_excc_amt",
+                    fallback=Decimal("0"),
+                ),
+                holdings=holding_performances,
+            )
         except BrokerNormalizationError as error:
             raise KoreaInvestmentBrokerError(str(error)) from error
 
@@ -1156,6 +1200,26 @@ class KoreaInvestmentBrokerReader(_KoreaInvestmentApiClient, BrokerReader):
             )
         except BrokerNormalizationError as error:
             raise KoreaInvestmentBrokerError(str(error)) from error
+
+    def _request_balance_payload(self) -> Mapping[str, object]:
+        return self._request_json(
+            "GET",
+            KIS_BALANCE_PATH,
+            params={
+                "CANO": self._cano,
+                "ACNT_PRDT_CD": self._account_product_code,
+                "AFHR_FLPR_YN": "N",
+                "OFL_YN": "",
+                "INQR_DVSN": "02",
+                "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "N",
+                "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "00",
+                "CTX_AREA_FK100": "",
+                "CTX_AREA_NK100": "",
+            },
+            tr_id=self._balance_tr_id,
+        )
 
 
 class KoreaInvestmentBarSource(_KoreaInvestmentApiClient):
@@ -2894,6 +2958,123 @@ def _require_sequence(
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         raise KoreaInvestmentBrokerError(f"{key} must be an array")
     return value
+
+
+def _parse_balance_holdings(payload: Mapping[str, object]) -> tuple[Holding, ...]:
+    rows = _require_sequence(payload, "output1")
+    holdings: list[Holding] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise KoreaInvestmentBrokerError("output1 entries must be mappings")
+
+        quantity = _coerce_int(row.get("hldg_qty"), field_name="hldg_qty")
+        if quantity <= 0:
+            continue
+
+        holdings.append(
+            normalize_holding(
+                {
+                    "symbol": _coerce_string(row.get("pdno"), field_name="pdno"),
+                    "quantity": quantity,
+                    "average_price": row.get("pchs_avg_pric"),
+                    "current_price": row.get("prpr"),
+                },
+            ),
+        )
+    return tuple(sorted(holdings, key=lambda holding: holding.symbol))
+
+
+def _parse_holding_performance(
+    row: Mapping[str, object],
+) -> HoldingPerformance | None:
+    quantity = _coerce_int(row.get("hldg_qty"), field_name="hldg_qty")
+    if quantity <= 0:
+        return None
+    symbol = _coerce_string(row.get("pdno"), field_name="pdno")
+    average_price = _coerce_decimal(
+        row.get("pchs_avg_pric"),
+        field_name="pchs_avg_pric",
+    )
+    current_price = _coerce_decimal(row.get("prpr"), field_name="prpr")
+    purchase_amount = _row_decimal(
+        row,
+        "pchs_amt",
+        fallback=average_price * Decimal(quantity),
+    )
+    evaluation_amount = _row_decimal(
+        row,
+        "evlu_amt",
+        fallback=current_price * Decimal(quantity),
+    )
+    profit_loss = _row_decimal(
+        row,
+        "evlu_pfls_amt",
+        fallback=evaluation_amount - purchase_amount,
+    )
+    profit_loss_rate = _row_decimal(
+        row,
+        "evlu_pfls_rt",
+        fallback=_calculate_profit_loss_rate(profit_loss, purchase_amount),
+    )
+    return HoldingPerformance(
+        symbol=symbol,
+        quantity=quantity,
+        average_price=average_price,
+        current_price=current_price,
+        purchase_amount=purchase_amount,
+        evaluation_amount=evaluation_amount,
+        profit_loss=profit_loss,
+        profit_loss_rate=profit_loss_rate,
+    )
+
+
+def _balance_summary_mapping(payload: Mapping[str, object]) -> Mapping[str, object]:
+    summary = payload.get("output2")
+    if isinstance(summary, Mapping):
+        return summary
+    if isinstance(summary, Sequence) and not isinstance(
+        summary,
+        (str, bytes, bytearray),
+    ):
+        if not summary:
+            return {}
+        first = summary[0]
+        if isinstance(first, Mapping):
+            return first
+    raise KoreaInvestmentBrokerError("output2 must be an object or object array")
+
+
+def _row_decimal(
+    row: Mapping[str, object],
+    key: str,
+    *,
+    fallback: Decimal,
+) -> Decimal:
+    value = row.get(key)
+    if value is None:
+        return fallback
+    return _coerce_decimal(value, field_name=key)
+
+
+def _summary_decimal(
+    summary: Mapping[str, object],
+    *keys: str,
+    fallback: Decimal,
+) -> Decimal:
+    for key in keys:
+        value = summary.get(key)
+        if value is not None:
+            return _coerce_decimal(value, field_name=key)
+    return fallback
+
+
+def _calculate_profit_loss_rate(
+    profit_loss: Decimal,
+    purchase_amount: Decimal,
+) -> Decimal:
+    if purchase_amount == Decimal("0"):
+        return Decimal("0")
+    return (profit_loss / purchase_amount) * Decimal("100")
 
 
 def _coerce_string(value: object, *, field_name: str) -> str:
