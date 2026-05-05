@@ -105,6 +105,7 @@ class HoldingPerformance:
     evaluation_amount: Decimal
     profit_loss: Decimal
     profit_loss_rate: Decimal
+    name: str | None = None
 
     def __post_init__(self) -> None:
         _require_non_empty_symbol(self.symbol)
@@ -113,6 +114,8 @@ class HoldingPerformance:
         _require_non_negative_decimal("current_price", self.current_price)
         _require_non_negative_decimal("purchase_amount", self.purchase_amount)
         _require_non_negative_decimal("evaluation_amount", self.evaluation_amount)
+        if self.name is not None:
+            _require_non_blank("name", self.name)
 
 
 @dataclass(frozen=True, slots=True)

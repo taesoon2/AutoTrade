@@ -76,12 +76,14 @@ def test_korea_investment_broker_reader_returns_standard_models() -> None:
                     "output1": [
                         {
                             "pdno": "357870",
+                            "prdt_name": "TIGER CD금리투자KIS",
                             "hldg_qty": "2",
                             "pchs_avg_pric": "10000",
                             "prpr": "10100",
                         },
                         {
                             "pdno": "069500",
+                            "prdt_name": "KODEX 200",
                             "hldg_qty": "1",
                             "pchs_avg_pric": "9000",
                             "prpr": "9500",
@@ -184,6 +186,7 @@ def test_korea_investment_broker_reader_returns_account_performance() -> None:
                     "output1": [
                         {
                             "pdno": "357870",
+                            "prdt_name": "TIGER CD금리투자KIS",
                             "hldg_qty": "2",
                             "pchs_avg_pric": "10000",
                             "prpr": "10100",
@@ -194,6 +197,7 @@ def test_korea_investment_broker_reader_returns_account_performance() -> None:
                         },
                         {
                             "pdno": "069500",
+                            "prdt_name": "KODEX 200",
                             "hldg_qty": "1",
                             "pchs_avg_pric": "9000",
                             "prpr": "9500",
@@ -238,6 +242,7 @@ def test_korea_investment_broker_reader_returns_account_performance() -> None:
                 evaluation_amount=Decimal("9500"),
                 profit_loss=Decimal("500"),
                 profit_loss_rate=Decimal("5.56"),
+                name="KODEX 200",
             ),
             HoldingPerformance(
                 symbol="357870",
@@ -248,6 +253,7 @@ def test_korea_investment_broker_reader_returns_account_performance() -> None:
                 evaluation_amount=Decimal("20200"),
                 profit_loss=Decimal("200"),
                 profit_loss_rate=Decimal("1.00"),
+                name="TIGER CD금리투자KIS",
             ),
         ),
     )

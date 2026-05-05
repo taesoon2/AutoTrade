@@ -17,6 +17,7 @@ from autotrade.broker import KoreaInvestmentBrokerReader
 from autotrade.broker import KoreaInvestmentBrokerTrader
 from autotrade.broker import PaperBroker
 from autotrade.common import AccountPerformance
+from autotrade.common import HoldingPerformance
 from autotrade.config import AppSettings
 from autotrade.config import ConfigError
 from autotrade.config import TelegramSettings
@@ -475,7 +476,7 @@ def render_account_performance(account_performance: AccountPerformance) -> str:
             lines.append(
                 " ".join(
                     (
-                        f"- {holding.symbol}",
+                        f"- {_holding_display_name(holding)}",
                         f"quantity={holding.quantity}",
                         f"average_price={_format_krw(holding.average_price)}",
                         f"current_price={_format_krw(holding.current_price)}",
@@ -486,6 +487,13 @@ def render_account_performance(account_performance: AccountPerformance) -> str:
                 )
             )
     return "\n".join(lines)
+
+
+def _holding_display_name(holding: HoldingPerformance) -> str:
+    name = holding.name
+    if isinstance(name, str) and name.strip():
+        return f"{name.strip()}({holding.symbol})"
+    return holding.symbol
 
 
 def _format_krw(value: Decimal, *, signed: bool = False) -> str:

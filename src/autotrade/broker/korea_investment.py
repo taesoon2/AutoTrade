@@ -3025,7 +3025,16 @@ def _parse_holding_performance(
         evaluation_amount=evaluation_amount,
         profit_loss=profit_loss,
         profit_loss_rate=profit_loss_rate,
+        name=_balance_row_product_name(row),
     )
+
+
+def _balance_row_product_name(row: Mapping[str, object]) -> str | None:
+    for field_name in ("prdt_name", "prdt_abrv_name", "pdnm"):
+        value = _optional_output_string(row.get(field_name))
+        if value is not None:
+            return value
+    return None
 
 
 def _balance_summary_mapping(payload: Mapping[str, object]) -> Mapping[str, object]:

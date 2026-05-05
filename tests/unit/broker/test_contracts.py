@@ -338,6 +338,7 @@ class DummyBrokerReader:
                     evaluation_amount=Decimal("9500"),
                     profit_loss=Decimal("500"),
                     profit_loss_rate=Decimal("5.555555555555555555555555556"),
+                    name="KODEX 200",
                 ),
                 HoldingPerformance(
                     symbol="357870",
@@ -348,6 +349,7 @@ class DummyBrokerReader:
                     evaluation_amount=Decimal("20200"),
                     profit_loss=Decimal("200"),
                     profit_loss_rate=Decimal("1.00"),
+                    name="TIGER CD금리투자KIS",
                 ),
             ),
         )
