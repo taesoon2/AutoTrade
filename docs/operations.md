@@ -23,6 +23,7 @@ The repository includes baseline regular-session `scheduler/report` support.
 - `run-continuous`: runs the scheduler, sleeps until `next_run_at`, and uses `AUTOTRADE_LOG_DIR/scheduler_state.json` to avoid duplicate slots after restart.
 - `control pause|resume`: updates `AUTOTRADE_LOG_DIR/runner_control.json` so an active `run-continuous` process can pause before starting later jobs and resume cooperatively.
 - `market_close`: writes daily run/inspection reports and, on the last trading day of the week, a weekly review.
+- `account-performance`: reads the current broker account balance and prints account-level purchase amount, evaluation amount, profit/loss, profit/loss rate, cash available, and symbol-level holding performance.
 - Official CLI: `src/autotrade/cli.py`. In a local `src` checkout, use `PYTHONPATH=src python -m autotrade.cli ...`; compatibility path `python tools/operations.py ...` remains available.
 - CLI reads repo-root `.env` by default; template: `docs/autotrade.env.example`.
 - Default inputs/outputs: `AUTOTRADE_LOG_DIR/bars`, `notifications.jsonl`, `execution_state.json`, `scheduler_state.json`.
@@ -48,8 +49,26 @@ Useful commands:
 - Resume continuous runner: `PYTHONPATH=src python -m autotrade.cli control resume`
 - Market open only: `PYTHONPATH=src python -m autotrade.cli market-open`
 - Market close only: `PYTHONPATH=src python -m autotrade.cli market-close`
+- Account performance only: `PYTHONPATH=src python -m autotrade.cli account-performance`
 - Weekly review only: `PYTHONPATH=src python -m autotrade.cli weekly-review --env-file /path/to/custom.env`
 - Compatibility: `python tools/operations.py ...`
+
+## Account Performance
+
+`account-performance` uses the configured broker reader and does not submit orders.
+For KIS, it calls domestic `inquire-balance`, normalizes `output1` holdings and
+`output2` account totals, and prints:
+
+- account profit/loss rate
+- total profit/loss
+- total purchase amount
+- total evaluation amount
+- available cash
+- holding count and per-symbol quantity, average price, current price, profit/loss, and profit/loss rate
+
+In simulated paper mode, the same fields are calculated from `PaperBroker` cash,
+positions, and the latest market bars. With no position purchase amount, the
+profit/loss rate is reported as `0`.
 
 ## Settings
 
@@ -100,14 +119,15 @@ Optional:
 
 ## Market Close
 
-- Summarize orders, fills, and holdings.
+- Summarize orders, fills, holdings, and account performance when broker account performance lookup is available.
 - Write reports and next-trading-day checklist items.
-- Generate daily run report and alerts after close.
+- Generate daily run report and alerts after close. Daily run alerts include account profit/loss, profit/loss rate, and holding count when account performance was collected.
 
 ## Artifacts
 
 - Run log: phase, scheduled time, success/failure, details.
 - Daily report: counts and failures by open/intraday/close phase.
+- Account performance: account-level and symbol-level profit/loss summary from the current broker account.
 - Alerts: `error` on failure, `warning` if nothing ran, otherwise `info`.
 - Telegram: retries `429`, `5xx`, and network errors; splits long messages; sends through a bounded background queue so network retry waits do not block the active operation path.
 - Telegram control: when Telegram is enabled, `/pause` and `/resume` commands are accepted only from `AUTOTRADE_TELEGRAM_CHAT_ID`; warning/error chat ids are output-only for v1. Control polling uses `AUTOTRADE_TELEGRAM_CONTROL_TIMEOUT_SECONDS`, separate from alert send timeout.

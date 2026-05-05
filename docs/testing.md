@@ -19,14 +19,19 @@ Before live trading, run this minimum paper-account check:
 2. Run read-only smoke for quote, balance, and orderable quantity. If a recent
    order id is available, add `--order-history-order-id <order-id>` to also
    verify order history parsing.
-3. Submit one tiny limit order; verify modify and cancel are accepted.
-4. Submit one aggressive order to induce fill; verify order state and holdings change.
-5. Cross-check stdout, manual check log, and raw KIS log.
+3. Run `PYTHONPATH=src python -m autotrade.cli account-performance`; verify
+   account-level profit/loss, profit/loss rate, cash, and holding details are
+   printed without submitting orders.
+4. Submit one tiny limit order; verify modify and cancel are accepted.
+5. Submit one aggressive order to induce fill; verify order state and holdings change.
+6. Cross-check stdout, manual check log, account performance output, and raw KIS log.
 
 ### Pass Criteria
 
 - `manual_paper_check_*.log` includes order submit, modify, cancel, and final balance lookup.
 - Raw KIS log at `AUTOTRADE_LOG_DIR/kis_raw_YYYYMMDD.log` confirms `order-cash`, `order-rvsecncl`, and `inquire-balance`.
+- `account-performance` output matches the KIS balance response totals and
+  includes per-symbol holding profit/loss rates.
 - KIS paper `inquire-daily-ccld` may omit per-order `output1`; confirm fills with holdings increase and cancel-impossible response.
 - After an aggressive order, `40330000 - 모의투자 정정/취소할 수량이 없습니다.` plus increased holdings means the paper environment treated it as fully filled.
 - Unit broker contract tests include recorded KIS fixtures for quote, holdings,
