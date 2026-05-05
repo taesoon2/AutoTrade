@@ -15,6 +15,7 @@ def test_build_parser_exposes_expected_subcommands() -> None:
         "control",
         "daily-inspection",
         "account-performance",
+        "backtest",
         "run-once",
         "run-continuous",
         "market-open",

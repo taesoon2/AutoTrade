@@ -32,6 +32,8 @@ Before live trading, run this minimum paper-account check:
 - Raw KIS log at `AUTOTRADE_LOG_DIR/kis_raw_YYYYMMDD.log` confirms `order-cash`, `order-rvsecncl`, and `inquire-balance`.
 - `account-performance` output matches the KIS balance response totals and
   includes per-symbol holding profit/loss rates.
+- `backtest --symbol <code>` can replay stored bars and writes report, trades,
+  and equity CSV artifacts without broker writes.
 - KIS paper `inquire-daily-ccld` may omit per-order `output1`; confirm fills with holdings increase and cancel-impossible response.
 - After an aggressive order, `40330000 - 모의투자 정정/취소할 수량이 없습니다.` plus increased holdings means the paper environment treated it as fully filled.
 - Unit broker contract tests include recorded KIS fixtures for quote, holdings,

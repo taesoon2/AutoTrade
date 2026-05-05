@@ -24,6 +24,7 @@ The repository includes baseline regular-session `scheduler/report` support.
 - `control pause|resume`: updates `AUTOTRADE_LOG_DIR/runner_control.json` so an active `run-continuous` process can pause before starting later jobs and resume cooperatively.
 - `market_close`: writes daily run/inspection reports and, on the last trading day of the week, a weekly review.
 - `account-performance`: reads the current broker account balance and prints account-level purchase amount, evaluation amount, profit/loss, profit/loss rate, cash available, and symbol-level holding performance.
+- `backtest`: reads stored CSV bars for one symbol, runs a strategy with a configurable cost model, prints combined performance, and writes report/trade/equity artifacts.
 - Official CLI: `src/autotrade/cli.py`. In a local `src` checkout, use `PYTHONPATH=src python -m autotrade.cli ...`; compatibility path `python tools/operations.py ...` remains available.
 - CLI reads repo-root `.env` by default; template: `docs/autotrade.env.example`.
 - Default inputs/outputs: `AUTOTRADE_LOG_DIR/bars`, `notifications.jsonl`, `execution_state.json`, `scheduler_state.json`.
@@ -50,6 +51,7 @@ Useful commands:
 - Market open only: `PYTHONPATH=src python -m autotrade.cli market-open`
 - Market close only: `PYTHONPATH=src python -m autotrade.cli market-close`
 - Account performance only: `PYTHONPATH=src python -m autotrade.cli account-performance`
+- Backtest one symbol: `PYTHONPATH=src python -m autotrade.cli backtest --symbol 069500 --strategy daily_trend_following`
 - Weekly review only: `PYTHONPATH=src python -m autotrade.cli weekly-review --env-file /path/to/custom.env`
 - Compatibility: `python tools/operations.py ...`
 
@@ -69,6 +71,24 @@ For KIS, it calls domestic `inquire-balance`, normalizes `output1` holdings and
 In simulated paper mode, the same fields are calculated from `PaperBroker` cash,
 positions, and the latest market bars. With no position purchase amount, the
 profit/loss rate is reported as `0`.
+
+## Backtesting
+
+`backtest` is read-only against the broker. It uses CSV bars from
+`AUTOTRADE_LOG_DIR/bars` by default, or `--bar-root`, and writes outputs under
+`AUTOTRADE_LOG_DIR/backtests` by default, or `--output-dir`.
+
+Useful options:
+
+- `--initial-cash`: starting cash, default `10000000`.
+- `--commission-rate`, `--tax-rate`, `--slippage-rate`: decimal rates applied by the backtest cost model.
+- `--in-sample-ratio`: in/out sample split ratio; use `0` to disable the split.
+- `--start`, `--end`: timezone-aware ISO 8601 filters for the input bars.
+- `--keep-open-position`: keep the final open position instead of forcing an exit on the last bar.
+
+Each run writes a text report, a trades CSV, and an equity curve CSV. Stdout
+prints the same artifact paths with combined return, CAGR, drawdown, trade
+count, win rate, and profit factor.
 
 ## Settings
 

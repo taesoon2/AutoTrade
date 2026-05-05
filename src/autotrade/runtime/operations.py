@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from csv import writer
 import json
 import logging
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from dataclasses import replace
 from datetime import date
 from datetime import datetime
@@ -29,7 +31,12 @@ from autotrade.data import KST
 from autotrade.data import KrxRegularSessionCalendar
 from autotrade.data import Timeframe
 from autotrade.data import validate_bar_series
+from autotrade.data.validation import normalize_symbol
 from autotrade.data.validation import normalize_symbols
+from autotrade.execution import BacktestConfig
+from autotrade.execution import BacktestCostModel
+from autotrade.execution import BacktestEngine
+from autotrade.execution import BacktestResult
 from autotrade.execution import FileExecutionStateStore
 from autotrade.recommendation import ApprovedSymbolsRecord
 from autotrade.recommendation import RecommendationArtifacts
@@ -40,12 +47,14 @@ from autotrade.recommendation import load_seed_universe_csv
 from autotrade.recommendation import write_approved_symbols_bundle
 from autotrade.recommendation import write_recommendation_bundle
 from autotrade.report import build_daily_inspection_report
+from autotrade.report import build_backtest_report
 from autotrade.report import build_weekly_review_report
 from autotrade.report import BackgroundNotifier
 from autotrade.report import CompositeNotifier
 from autotrade.report import FileNotifier
 from autotrade.report import Notifier
 from autotrade.report import publish_weekly_review_alert
+from autotrade.report import render_backtest_report
 from autotrade.report import TelegramNotifier
 from autotrade.report import write_daily_inspection_report
 from autotrade.report import write_weekly_review_report
@@ -128,6 +137,7 @@ from autotrade.runtime.runner import RunnerStatus
 from autotrade.runtime.runner import ScheduledRunner
 from autotrade.runtime.telegram_control import BackgroundTelegramControlPoller
 from autotrade.runtime.telegram_control import TelegramControlPoller
+from autotrade.strategy import create_strategy
 from autotrade.strategy import StrategyKind
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -137,6 +147,13 @@ logger = logging.getLogger(__name__)
 EXIT_CODE_SUCCESS = 0
 EXIT_CODE_OPERATION_FAILED = 1
 EXIT_CODE_CONFIGURATION_ERROR = 2
+
+
+@dataclass(frozen=True, slots=True)
+class BacktestArtifacts:
+    report_path: Path
+    trades_path: Path
+    equity_path: Path
 
 
 def _log_operation_failure(command_name: str, error: Exception) -> None:
@@ -506,6 +523,221 @@ def _format_rate(value: Decimal) -> str:
     rounded = value.quantize(Decimal("0.01"))
     sign = "+" if rounded > 0 else ""
     return f"{sign}{rounded:.2f}%"
+
+
+def _handle_backtest(args: argparse.Namespace) -> int:
+    logger.info("백테스트 실행을 준비합니다.")
+    settings = _load_runtime_settings(args.env_file)
+    if settings is None:
+        return EXIT_CODE_CONFIGURATION_ERROR
+
+    try:
+        timeframe = Timeframe(args.timeframe)
+        start = _parse_optional_datetime_argument(args.start, field_name="start")
+        end = _parse_optional_datetime_argument(args.end, field_name="end")
+        resolved_bar_root = args.bar_root or (settings.log_dir / "bars")
+        output_dir = args.output_dir or (settings.log_dir / "backtests")
+        bars = CsvBarSource(resolved_bar_root).load_bars(
+            args.symbol,
+            timeframe,
+            start=start,
+            end=end,
+        )
+        if not bars:
+            raise ValueError(
+                "backtest bars not found. "
+                f"symbol={normalize_symbol(args.symbol)} "
+                f"timeframe={timeframe.value} "
+                f"bar_root={resolved_bar_root}"
+            )
+        result = BacktestEngine().run(
+            create_strategy(StrategyKind(args.strategy)),
+            bars,
+            BacktestConfig(
+                initial_cash=args.initial_cash,
+                cost_model=BacktestCostModel(
+                    commission_rate=args.commission_rate,
+                    tax_rate=args.tax_rate,
+                    slippage_rate=args.slippage_rate,
+                ),
+                in_sample_ratio=(
+                    None
+                    if args.in_sample_ratio == Decimal("0")
+                    else args.in_sample_ratio
+                ),
+                close_open_position_on_finish=args.close_open_position_on_finish,
+            ),
+        )
+        artifacts = _write_backtest_artifacts(
+            result,
+            output_dir=output_dir,
+            generated_at=datetime.now(KST),
+        )
+    except Exception as exc:
+        _log_operation_failure("backtest", exc)
+        return EXIT_CODE_OPERATION_FAILED
+
+    print(_render_backtest_stdout(result, artifacts))
+    return EXIT_CODE_SUCCESS
+
+
+def _parse_optional_datetime_argument(
+    value: str | None,
+    *,
+    field_name: str,
+) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return parsed
+
+
+def _write_backtest_artifacts(
+    result: BacktestResult,
+    *,
+    output_dir: Path,
+    generated_at: datetime,
+) -> BacktestArtifacts:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    report = build_backtest_report(result)
+    stem = (
+        f"backtest_{normalize_symbol(result.symbol)}_{result.timeframe.value}_"
+        f"{generated_at.strftime('%Y%m%dT%H%M%S')}"
+    )
+    report_path = output_dir / f"{stem}.txt"
+    trades_path = output_dir / f"{stem}_trades.csv"
+    equity_path = output_dir / f"{stem}_equity.csv"
+
+    report_path.write_text(render_backtest_report(report), encoding="utf-8")
+    _write_backtest_trades_csv(result, trades_path)
+    _write_backtest_equity_csv(result, equity_path)
+    return BacktestArtifacts(
+        report_path=report_path,
+        trades_path=trades_path,
+        equity_path=equity_path,
+    )
+
+
+def _write_backtest_trades_csv(result: BacktestResult, path: Path) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        csv_writer = writer(handle)
+        csv_writer.writerow(
+            (
+                "symbol",
+                "entered_at",
+                "exited_at",
+                "quantity",
+                "entry_price",
+                "exit_price",
+                "entry_fees",
+                "exit_fees",
+                "gross_pnl",
+                "net_pnl",
+                "holding_period_bars",
+                "exit_reason",
+            )
+        )
+        for trade in result.trades:
+            csv_writer.writerow(
+                (
+                    trade.symbol,
+                    trade.entered_at.isoformat(),
+                    trade.exited_at.isoformat(),
+                    trade.quantity,
+                    str(trade.entry_price),
+                    str(trade.exit_price),
+                    str(trade.entry_fees),
+                    str(trade.exit_fees),
+                    str(trade.gross_pnl),
+                    str(trade.net_pnl),
+                    trade.holding_period_bars,
+                    trade.exit_reason,
+                )
+            )
+
+
+def _write_backtest_equity_csv(result: BacktestResult, path: Path) -> None:
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        csv_writer = writer(handle)
+        csv_writer.writerow(
+            (
+                "symbol",
+                "timestamp",
+                "close_price",
+                "cash",
+                "position_quantity",
+                "position_average_price",
+                "position_market_value",
+                "realized_pnl",
+                "unrealized_pnl",
+                "total_pnl",
+                "total_equity",
+            )
+        )
+        for snapshot in result.snapshots:
+            csv_writer.writerow(
+                (
+                    snapshot.symbol,
+                    snapshot.timestamp.isoformat(),
+                    str(snapshot.close_price),
+                    str(snapshot.cash),
+                    snapshot.position_quantity,
+                    str(snapshot.position_average_price),
+                    str(snapshot.position_market_value),
+                    str(snapshot.realized_pnl),
+                    str(snapshot.unrealized_pnl),
+                    str(snapshot.total_pnl),
+                    str(snapshot.total_equity),
+                )
+            )
+
+
+def _render_backtest_stdout(
+    result: BacktestResult,
+    artifacts: BacktestArtifacts,
+) -> str:
+    report = build_backtest_report(result)
+    combined = report.combined
+    lines = [
+        f"symbol={report.symbol}",
+        f"timeframe={report.timeframe}",
+        f"period={result.started_at.isoformat()}..{result.finished_at.isoformat()}",
+        f"initial_cash={report.initial_cash}",
+        f"final_equity={combined.final_equity}",
+        f"net_profit={combined.net_profit}",
+        f"total_return={_format_backtest_ratio(combined.total_return)}",
+        f"cagr={_format_optional_backtest_ratio(combined.cagr)}",
+        f"max_drawdown={_format_backtest_ratio(-combined.max_drawdown)}",
+        f"trade_count={combined.trade_count}",
+        f"win_rate={_format_optional_backtest_ratio(combined.win_rate)}",
+        f"profit_factor={_format_optional_backtest_decimal(combined.profit_factor)}",
+        f"report={artifacts.report_path}",
+        f"trades={artifacts.trades_path}",
+        f"equity={artifacts.equity_path}",
+    ]
+    return "\n".join(lines)
+
+
+def _format_backtest_ratio(value: Decimal) -> str:
+    return f"{(value * Decimal('100')).quantize(Decimal('0.01'))}%"
+
+
+def _format_optional_backtest_ratio(value: Decimal | None) -> str:
+    if value is None:
+        return "n/a"
+    if value.is_infinite():
+        return "inf"
+    return _format_backtest_ratio(value)
+
+
+def _format_optional_backtest_decimal(value: Decimal | None) -> str:
+    if value is None:
+        return "n/a"
+    if value.is_infinite():
+        return "inf"
+    return str(value.normalize())
 
 
 def _handle_collect_daily_bars(args: argparse.Namespace) -> int:

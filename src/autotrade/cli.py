@@ -145,6 +145,93 @@ def _build_parser() -> argparse.ArgumentParser:
         handler=operations._handle_account_performance
     )
 
+    backtest_parser = subparsers.add_parser(
+        "backtest",
+        help="저장된 바 데이터로 단일 종목 백테스트를 실행합니다.",
+    )
+    backtest_parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=operations.DEFAULT_ENV_FILE,
+        help="설정에 사용할 .env 파일 경로입니다. 기본값은 저장소 루트의 .env입니다.",
+    )
+    backtest_parser.add_argument(
+        "--symbol",
+        required=True,
+        help="백테스트할 종목 코드입니다.",
+    )
+    backtest_parser.add_argument(
+        "--strategy",
+        default=StrategyKind.DAILY_TREND_FOLLOWING.value,
+        choices=[kind.value for kind in StrategyKind],
+        help="백테스트할 전략 종류입니다.",
+    )
+    backtest_parser.add_argument(
+        "--timeframe",
+        default="1d",
+        choices=[timeframe.value for timeframe in operations.Timeframe],
+        help="읽을 바 데이터 주기입니다.",
+    )
+    backtest_parser.add_argument(
+        "--bar-root",
+        type=Path,
+        default=None,
+        help="CSV 바 데이터 루트 경로입니다. 기본값은 AUTOTRADE_LOG_DIR/bars 입니다.",
+    )
+    backtest_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="백테스트 산출물 저장 경로입니다. 기본값은 AUTOTRADE_LOG_DIR/backtests 입니다.",
+    )
+    backtest_parser.add_argument(
+        "--initial-cash",
+        type=Decimal,
+        default=Decimal("10000000"),
+        help="초기 현금입니다.",
+    )
+    backtest_parser.add_argument(
+        "--commission-rate",
+        type=Decimal,
+        default=Decimal("0"),
+        help="매수/매도 수수료율입니다. 예: 0.00015",
+    )
+    backtest_parser.add_argument(
+        "--tax-rate",
+        type=Decimal,
+        default=Decimal("0"),
+        help="매도 세율입니다. 예: 0.0018",
+    )
+    backtest_parser.add_argument(
+        "--slippage-rate",
+        type=Decimal,
+        default=Decimal("0"),
+        help="체결 슬리피지율입니다. 예: 0.0005",
+    )
+    backtest_parser.add_argument(
+        "--in-sample-ratio",
+        type=Decimal,
+        default=Decimal("0.7"),
+        help="in/out sample 분할 비율입니다. 비활성화하려면 0을 지정합니다.",
+    )
+    backtest_parser.add_argument(
+        "--start",
+        default=None,
+        help="백테스트 시작 시각입니다. ISO 8601 timezone-aware 형식입니다.",
+    )
+    backtest_parser.add_argument(
+        "--end",
+        default=None,
+        help="백테스트 종료 시각입니다. ISO 8601 timezone-aware 형식입니다.",
+    )
+    backtest_parser.add_argument(
+        "--keep-open-position",
+        action="store_false",
+        dest="close_open_position_on_finish",
+        help="마지막 바에서 열린 포지션을 강제 청산하지 않습니다.",
+    )
+    backtest_parser.set_defaults(handler=operations._handle_backtest)
+
     weekly_review_parser = subparsers.add_parser(
         "weekly-review",
         help="주간 리뷰 파일을 생성하고 필요하면 알림을 발행합니다.",
