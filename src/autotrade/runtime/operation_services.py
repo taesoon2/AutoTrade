@@ -8,9 +8,11 @@ from pathlib import Path
 
 from autotrade.broker import BrokerReader
 from autotrade.broker import BrokerTrader
+from autotrade.broker import FilePaperBrokerSnapshotStore
 from autotrade.broker import KoreaInvestmentBrokerReader
 from autotrade.broker import KoreaInvestmentBrokerTrader
 from autotrade.broker import PaperBroker
+from autotrade.broker import PersistentPaperBroker
 from autotrade.config import AppSettings
 from autotrade.config import TelegramSettings
 from autotrade.data import CsvBarSource
@@ -115,6 +117,7 @@ def build_broker_clients(
         broker, paper_cash = build_paper_broker(
             settings,
             paper_cash_override=paper_cash_override,
+            state_path=settings.log_dir / "paper_broker_state.json",
         )
         if paper_cash_override is None:
             logger.info(
@@ -194,14 +197,41 @@ def build_paper_broker(
     settings: AppSettings,
     *,
     paper_cash_override: Decimal | None,
+    state_path: Path | None = None,
     reader_cls: type[KoreaInvestmentBrokerReader] = KoreaInvestmentBrokerReader,
     broker_cls: type[PaperBroker] = PaperBroker,
 ) -> tuple[PaperBroker, Decimal]:
+    if state_path is not None and broker_cls is PaperBroker:
+        snapshot_store = FilePaperBrokerSnapshotStore(state_path)
+        snapshot = snapshot_store.load()
+        if snapshot is not None:
+            broker = PersistentPaperBroker.restore(
+                snapshot,
+                snapshot_store=snapshot_store,
+            )
+            return broker, snapshot.cash
+
     if paper_cash_override is not None:
+        if state_path is not None and broker_cls is PaperBroker:
+            snapshot_store = FilePaperBrokerSnapshotStore(state_path)
+            broker = PersistentPaperBroker(
+                paper_cash_override,
+                snapshot_store=snapshot_store,
+            )
+            broker.persist()
+            return broker, paper_cash_override
         return broker_cls(initial_cash=paper_cash_override), paper_cash_override
 
     reader = reader_cls(settings.broker)
     target_symbol = settings.target_symbols[0]
     quote = reader.get_quote(target_symbol)
     capacity = reader.get_order_capacity(target_symbol, quote.price)
+    if state_path is not None and broker_cls is PaperBroker:
+        snapshot_store = FilePaperBrokerSnapshotStore(state_path)
+        persistent_broker = PersistentPaperBroker(
+            capacity.cash_available,
+            snapshot_store=snapshot_store,
+        )
+        persistent_broker.persist()
+        return persistent_broker, capacity.cash_available
     return broker_cls(initial_cash=capacity.cash_available), capacity.cash_available

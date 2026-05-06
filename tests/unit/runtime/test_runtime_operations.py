@@ -11,6 +11,9 @@ from zoneinfo import ZoneInfo
 import autotrade.runtime.operations as operations
 import pytest
 from autotrade.common import OrderCapacity
+from autotrade.common import OrderRequest
+from autotrade.common import OrderSide
+from autotrade.common import OrderType
 from autotrade.common import Quote
 from autotrade.config import AppSettings
 from autotrade.config import BrokerSettings
@@ -899,6 +902,107 @@ def test_build_paper_broker_uses_override_without_kis_lookup(
     capacity = broker.get_order_capacity("069500", Decimal("1000"))
     assert initial_cash == Decimal("5000000")
     assert capacity.cash_available == Decimal("5000000")
+
+
+def test_build_paper_broker_restores_persisted_simulated_state(tmp_path) -> None:
+    settings = _settings(tmp_path / "logs")
+    state_path = settings.log_dir / "paper_broker_state.json"
+    broker, initial_cash = operations._build_paper_broker(
+        settings,
+        paper_cash_override=Decimal("1000000"),
+        state_path=state_path,
+    )
+    assert initial_cash == Decimal("1000000")
+
+    broker.advance_bar(
+        Bar(
+            symbol="069500",
+            timeframe=Timeframe.DAY,
+            timestamp=datetime(2026, 4, 10, 15, 30, tzinfo=KST),
+            open=Decimal("100000"),
+            high=Decimal("100000"),
+            low=Decimal("100000"),
+            close=Decimal("100000"),
+            volume=1,
+        )
+    )
+    broker.submit_order(
+        OrderRequest(
+            request_id="paper-buy-1",
+            symbol="069500",
+            side=OrderSide.BUY,
+            quantity=2,
+            limit_price=Decimal("100000"),
+            requested_at=datetime(2026, 4, 10, 15, 30, tzinfo=KST),
+            order_type=OrderType.LIMIT,
+        )
+    )
+
+    restored, restored_cash = operations._build_paper_broker(
+        settings,
+        paper_cash_override=None,
+        state_path=state_path,
+    )
+
+    performance = restored.get_account_performance()
+    assert restored_cash == Decimal("800000")
+    assert performance.cash_available == Decimal("800000")
+    assert len(performance.holdings) == 1
+    assert performance.holdings[0].symbol == "069500"
+    assert performance.holdings[0].quantity == 2
+
+
+def test_build_paper_broker_backs_up_corrupt_persisted_state(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, str, Decimal | None]] = []
+
+    class FakeReader:
+        def __init__(self, settings: BrokerSettings) -> None:
+            assert settings.environment == "paper"
+
+        def get_quote(self, symbol: str) -> Quote:
+            calls.append(("quote", symbol, None))
+            return Quote(
+                symbol=symbol,
+                price=Decimal("1000"),
+                as_of=datetime(2026, 4, 10, 8, 50, tzinfo=KST),
+            )
+
+        def get_order_capacity(
+            self,
+            symbol: str,
+            order_price: Decimal,
+        ) -> OrderCapacity:
+            calls.append(("capacity", symbol, order_price))
+            return OrderCapacity(
+                symbol=symbol,
+                order_price=order_price,
+                max_orderable_quantity=8,
+                cash_available=Decimal("123000"),
+            )
+
+    monkeypatch.setattr(operations, "KoreaInvestmentBrokerReader", FakeReader)
+    settings = _settings(tmp_path / "logs")
+    state_path = settings.log_dir / "paper_broker_state.json"
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text("{not-json", encoding="utf-8")
+
+    broker, initial_cash = operations._build_paper_broker(
+        settings,
+        paper_cash_override=None,
+        state_path=state_path,
+    )
+
+    capacity = broker.get_order_capacity("069500", Decimal("1000"))
+    assert initial_cash == Decimal("123000")
+    assert capacity.cash_available == Decimal("123000")
+    assert calls == [
+        ("quote", "069500", None),
+        ("capacity", "069500", Decimal("1000")),
+    ]
+    assert tuple(state_path.parent.glob("paper_broker_state.json.corrupt-*"))
 
 
 def test_build_safe_stop_cleanup_handler_uses_safe_stop_context(monkeypatch) -> None:

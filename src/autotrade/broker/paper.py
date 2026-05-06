@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from decimal import Decimal
+from json import JSONDecodeError
+import logging
+from pathlib import Path
 
 from autotrade.broker.readers import BrokerReader
 from autotrade.broker.trading import BrokerTrader
 from autotrade.common import AccountPerformance
+from autotrade.common.persistence import move_corrupt_file
+from autotrade.common.persistence import write_text_atomically
 from autotrade.common import ExecutionFill
 from autotrade.common import ExecutionOrder
 from autotrade.common import Holding
@@ -18,6 +24,7 @@ from autotrade.common import OrderSide
 from autotrade.common import OrderStatus
 from autotrade.common import Quote
 from autotrade.data import Bar
+from autotrade.data import Timeframe
 
 ZERO = Decimal("0")
 _OPEN_ORDER_STATUSES = {
@@ -26,6 +33,7 @@ _OPEN_ORDER_STATUSES = {
     OrderStatus.PARTIALLY_FILLED,
     OrderStatus.CANCEL_PENDING,
 }
+logger = logging.getLogger(__name__)
 
 
 def _require_non_negative_decimal(field_name: str, value: Decimal) -> None:
@@ -479,3 +487,283 @@ def _calculate_profit_loss_rate(
     if purchase_amount == ZERO:
         return ZERO
     return (profit_loss / purchase_amount) * Decimal("100")
+
+
+class FilePaperBrokerSnapshotStore:
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        if self._path.exists() and not self._path.is_file():
+            raise ValueError("path must point to a file")
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def load(self) -> PaperBrokerSnapshot | None:
+        if not self._path.exists():
+            return None
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+            return _deserialize_paper_broker_snapshot(payload)
+        except (JSONDecodeError, ValueError) as error:
+            backup_path = move_corrupt_file(self._path)
+            logger.warning(
+                "손상된 paper broker 상태 파일을 백업하고 초기화합니다. "
+                "path=%s backup=%s reason=%s",
+                self._path,
+                backup_path,
+                error,
+            )
+            return None
+
+    def save(self, snapshot: PaperBrokerSnapshot) -> None:
+        write_text_atomically(
+            self._path,
+            json.dumps(
+                _serialize_paper_broker_snapshot(snapshot),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+
+
+class PersistentPaperBroker(PaperBroker):
+    def __init__(
+        self,
+        initial_cash: Decimal,
+        *,
+        snapshot_store: FilePaperBrokerSnapshotStore,
+    ) -> None:
+        super().__init__(initial_cash)
+        self._snapshot_store = snapshot_store
+
+    @classmethod
+    def restore(
+        cls,
+        snapshot: PaperBrokerSnapshot,
+        *,
+        snapshot_store: FilePaperBrokerSnapshotStore,
+    ) -> PersistentPaperBroker:
+        broker = cls(snapshot.cash, snapshot_store=snapshot_store)
+        restored = PaperBroker.from_snapshot(snapshot)
+        broker._cash = restored._cash
+        broker._positions = restored._positions
+        broker._orders = restored._orders
+        broker._fills = restored._fills
+        broker._market_bars = restored._market_bars
+        broker._next_order_sequence = restored._next_order_sequence
+        return broker
+
+    def persist(self) -> None:
+        self._snapshot_store.save(self.snapshot())
+
+    def advance_bar(self, bar: Bar) -> None:
+        super().advance_bar(bar)
+        self.persist()
+
+    def submit_order(self, request: OrderRequest) -> ExecutionOrder:
+        order = super().submit_order(request)
+        self.persist()
+        return order
+
+    def amend_order(self, request: OrderAmendRequest) -> ExecutionOrder:
+        order = super().amend_order(request)
+        self.persist()
+        return order
+
+    def cancel_order(self, request: OrderCancelRequest) -> ExecutionOrder:
+        order = super().cancel_order(request)
+        self.persist()
+        return order
+
+
+def _serialize_paper_broker_snapshot(
+    snapshot: PaperBrokerSnapshot,
+) -> dict[str, object]:
+    return {
+        "cash": str(snapshot.cash),
+        "holdings": [_serialize_holding(holding) for holding in snapshot.holdings],
+        "orders": [_serialize_order(order) for order in snapshot.orders],
+        "fills": [_serialize_fill(fill) for fill in snapshot.fills],
+        "market_bars": [_serialize_bar(bar) for bar in snapshot.market_bars],
+        "next_order_sequence": snapshot.next_order_sequence,
+    }
+
+
+def _deserialize_paper_broker_snapshot(payload: object) -> PaperBrokerSnapshot:
+    mapping = _require_mapping(payload, "paper broker snapshot")
+    return PaperBrokerSnapshot(
+        cash=_require_decimal(mapping, "cash"),
+        holdings=tuple(
+            _deserialize_holding(item) for item in _require_list(mapping, "holdings")
+        ),
+        orders=tuple(
+            _deserialize_order(item) for item in _require_list(mapping, "orders")
+        ),
+        fills=tuple(
+            _deserialize_fill(item) for item in _require_list(mapping, "fills")
+        ),
+        market_bars=tuple(
+            _deserialize_bar(item) for item in _require_list(mapping, "market_bars")
+        ),
+        next_order_sequence=_require_int(mapping, "next_order_sequence"),
+    )
+
+
+def _serialize_holding(holding: Holding) -> dict[str, object]:
+    return {
+        "symbol": holding.symbol,
+        "quantity": holding.quantity,
+        "average_price": str(holding.average_price),
+        "current_price": (
+            None if holding.current_price is None else str(holding.current_price)
+        ),
+    }
+
+
+def _deserialize_holding(payload: object) -> Holding:
+    mapping = _require_mapping(payload, "holding")
+    return Holding(
+        symbol=_require_text(mapping, "symbol"),
+        quantity=_require_int(mapping, "quantity"),
+        average_price=_require_decimal(mapping, "average_price"),
+        current_price=_optional_decimal(mapping, "current_price"),
+    )
+
+
+def _serialize_order(order: ExecutionOrder) -> dict[str, object]:
+    return {
+        "order_id": order.order_id,
+        "symbol": order.symbol,
+        "side": order.side.value,
+        "quantity": order.quantity,
+        "limit_price": str(order.limit_price),
+        "status": order.status.value,
+        "created_at": order.created_at.isoformat(),
+        "updated_at": order.updated_at.isoformat(),
+        "filled_quantity": order.filled_quantity,
+    }
+
+
+def _deserialize_order(payload: object) -> ExecutionOrder:
+    mapping = _require_mapping(payload, "order")
+    return ExecutionOrder(
+        order_id=_require_text(mapping, "order_id"),
+        symbol=_require_text(mapping, "symbol"),
+        side=OrderSide(_require_text(mapping, "side")),
+        quantity=_require_int(mapping, "quantity"),
+        limit_price=_require_decimal(mapping, "limit_price"),
+        status=OrderStatus(_require_text(mapping, "status")),
+        created_at=_require_datetime(mapping, "created_at"),
+        updated_at=_require_datetime(mapping, "updated_at"),
+        filled_quantity=_require_int(mapping, "filled_quantity"),
+    )
+
+
+def _serialize_fill(fill: ExecutionFill) -> dict[str, object]:
+    return {
+        "fill_id": fill.fill_id,
+        "order_id": fill.order_id,
+        "symbol": fill.symbol,
+        "quantity": fill.quantity,
+        "price": str(fill.price),
+        "filled_at": fill.filled_at.isoformat(),
+    }
+
+
+def _deserialize_fill(payload: object) -> ExecutionFill:
+    mapping = _require_mapping(payload, "fill")
+    return ExecutionFill(
+        fill_id=_require_text(mapping, "fill_id"),
+        order_id=_require_text(mapping, "order_id"),
+        symbol=_require_text(mapping, "symbol"),
+        quantity=_require_int(mapping, "quantity"),
+        price=_require_decimal(mapping, "price"),
+        filled_at=_require_datetime(mapping, "filled_at"),
+    )
+
+
+def _serialize_bar(bar: Bar) -> dict[str, object]:
+    return {
+        "symbol": bar.symbol,
+        "timeframe": bar.timeframe.value,
+        "timestamp": bar.timestamp.isoformat(),
+        "open": str(bar.open),
+        "high": str(bar.high),
+        "low": str(bar.low),
+        "close": str(bar.close),
+        "volume": bar.volume,
+    }
+
+
+def _deserialize_bar(payload: object) -> Bar:
+    mapping = _require_mapping(payload, "bar")
+    return Bar(
+        symbol=_require_text(mapping, "symbol"),
+        timeframe=Timeframe(_require_text(mapping, "timeframe")),
+        timestamp=_require_datetime(mapping, "timestamp"),
+        open=_require_decimal(mapping, "open"),
+        high=_require_decimal(mapping, "high"),
+        low=_require_decimal(mapping, "low"),
+        close=_require_decimal(mapping, "close"),
+        volume=_require_int(mapping, "volume"),
+    )
+
+
+def _require_mapping(value: object, field_name: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValueError(f"{field_name} must be a mapping")
+    return value
+
+
+def _require_list(mapping: dict[str, object], field_name: str) -> list[object]:
+    value = mapping.get(field_name)
+    if not isinstance(value, list):
+        raise ValueError(f"{field_name} must be a list")
+    return value
+
+
+def _require_text(mapping: dict[str, object], field_name: str) -> str:
+    value = mapping.get(field_name)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-blank string")
+    return value
+
+
+def _require_int(mapping: dict[str, object], field_name: str) -> int:
+    value = mapping.get(field_name)
+    if not isinstance(value, int):
+        raise ValueError(f"{field_name} must be an integer")
+    return value
+
+
+def _require_decimal(mapping: dict[str, object], field_name: str) -> Decimal:
+    value = mapping.get(field_name)
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a decimal string")
+    return Decimal(value)
+
+
+def _optional_decimal(
+    mapping: dict[str, object],
+    field_name: str,
+) -> Decimal | None:
+    value = mapping.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a decimal string when provided")
+    return Decimal(value)
+
+
+def _require_datetime(mapping: dict[str, object], field_name: str):
+    from datetime import datetime
+
+    value = mapping.get(field_name)
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be an ISO datetime string")
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return parsed

@@ -89,6 +89,48 @@ def test_handle_backtest_writes_report_trades_and_equity(
     assert "total_equity" in artifacts["equity"].read_text(encoding="utf-8")
 
 
+def test_handle_backtest_runs_without_broker_environment_when_paths_are_explicit(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    bar_root = tmp_path / "bars"
+    output_dir = tmp_path / "backtests"
+    CsvBarStore(bar_root).store_bars(_make_daily_bars("069500", [100, 100, 110]))
+    monkeypatch.setattr(
+        operations,
+        "create_strategy",
+        lambda strategy_kind: ScriptedStrategy(
+            [SignalAction.BUY, SignalAction.HOLD, SignalAction.SELL]
+        ),
+    )
+
+    result = operations._handle_backtest(
+        argparse.Namespace(
+            env_file=tmp_path / "missing.env",
+            symbol="069500",
+            strategy=operations.StrategyKind.DAILY_TREND_FOLLOWING.value,
+            timeframe=Timeframe.DAY.value,
+            bar_root=bar_root,
+            output_dir=output_dir,
+            initial_cash=Decimal("1000"),
+            commission_rate=Decimal("0"),
+            tax_rate=Decimal("0"),
+            slippage_rate=Decimal("0"),
+            in_sample_ratio=Decimal("0"),
+            start=None,
+            end=None,
+            close_open_position_on_finish=True,
+        )
+    )
+
+    assert result == operations.EXIT_CODE_SUCCESS
+    stdout = capsys.readouterr().out
+    assert "symbol=069500" in stdout
+    artifacts = _parse_artifact_paths(stdout)
+    assert artifacts["report"].is_relative_to(output_dir)
+
+
 def test_handle_backtest_returns_operation_failure_when_bars_missing(
     tmp_path: Path,
     monkeypatch,

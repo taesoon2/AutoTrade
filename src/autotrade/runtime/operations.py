@@ -531,16 +531,17 @@ def _format_rate(value: Decimal) -> str:
 
 def _handle_backtest(args: argparse.Namespace) -> int:
     logger.info("백테스트 실행을 준비합니다.")
-    settings = _load_runtime_settings(args.env_file)
-    if settings is None:
+    environment = _load_environment(args.env_file)
+    if environment is None:
         return EXIT_CODE_CONFIGURATION_ERROR
 
     try:
         timeframe = Timeframe(args.timeframe)
         start = _parse_optional_datetime_argument(args.start, field_name="start")
         end = _parse_optional_datetime_argument(args.end, field_name="end")
-        resolved_bar_root = args.bar_root or (settings.log_dir / "bars")
-        output_dir = args.output_dir or (settings.log_dir / "backtests")
+        log_dir = _resolve_backtest_log_dir(environment)
+        resolved_bar_root = args.bar_root or (log_dir / "bars")
+        output_dir = args.output_dir or (log_dir / "backtests")
         bars = CsvBarSource(resolved_bar_root).load_bars(
             args.symbol,
             timeframe,
@@ -583,6 +584,13 @@ def _handle_backtest(args: argparse.Namespace) -> int:
 
     print(_render_backtest_stdout(result, artifacts))
     return EXIT_CODE_SUCCESS
+
+
+def _resolve_backtest_log_dir(environment: Mapping[str, str]) -> Path:
+    raw_log_dir = environment.get("AUTOTRADE_LOG_DIR", "./logs")
+    if not raw_log_dir.strip():
+        return Path("./logs")
+    return Path(raw_log_dir)
 
 
 def _parse_optional_datetime_argument(
@@ -1323,10 +1331,12 @@ def _build_paper_broker(
     settings: AppSettings,
     *,
     paper_cash_override: Decimal | None,
+    state_path: Path | None = None,
 ) -> tuple[PaperBroker, Decimal]:
     return _build_paper_broker_impl(
         settings,
         paper_cash_override=paper_cash_override,
+        state_path=state_path,
         reader_cls=KoreaInvestmentBrokerReader,
         broker_cls=PaperBroker,
     )
