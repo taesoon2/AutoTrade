@@ -126,6 +126,170 @@ def test_telegram_control_poller_ignores_other_chats_and_advances_offset(
     assert notifier.notifications == []
 
 
+def test_telegram_control_poller_sends_account_status_for_primary_chat(
+    tmp_path,
+) -> None:
+    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
+    notifier = RecordingNotifier()
+    requests = []
+
+    def transport(request):
+        requests.append(request)
+        return TelegramHttpResponse(
+            status=200,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": [
+                        {
+                            "update_id": 25,
+                            "message": {
+                                "chat": {"id": "-100base"},
+                                "text": "/account@AutoTradeBot",
+                            },
+                        }
+                    ],
+                }
+            ).encode("utf-8"),
+            headers={},
+        )
+
+    poller = TelegramControlPoller(
+        settings=TelegramSettings(
+            enabled=True,
+            bot_token="bot-token",
+            chat_id="-100base",
+        ),
+        control_store=control_store,
+        notifier=notifier,
+        clock=lambda: datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        account_status_provider=lambda: "계좌 수익률: +1.23%",
+        transport=transport,
+    )
+
+    poller.poll()
+
+    state = control_store.load()
+    assert state.mode is RunnerControlMode.RUNNING
+    assert state.telegram_update_offset == 26
+    assert len(notifier.notifications) == 1
+    assert notifier.notifications[0].subject == "AutoTrade account performance"
+    assert notifier.notifications[0].body == "계좌 수익률: +1.23%"
+    request_payload = json.loads(requests[0].body.decode("utf-8"))
+    assert "offset" not in request_payload
+
+
+def test_telegram_control_poller_reports_account_status_failure(
+    tmp_path,
+) -> None:
+    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
+    notifier = RecordingNotifier()
+
+    def transport(request):
+        del request
+        return TelegramHttpResponse(
+            status=200,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": [
+                        {
+                            "update_id": 26,
+                            "message": {
+                                "chat": {"id": "-100base"},
+                                "text": "/balance",
+                            },
+                        }
+                    ],
+                }
+            ).encode("utf-8"),
+            headers={},
+        )
+
+    def failing_provider() -> str:
+        raise RuntimeError("broker unavailable")
+
+    poller = TelegramControlPoller(
+        settings=TelegramSettings(
+            enabled=True,
+            bot_token="bot-token",
+            chat_id="-100base",
+        ),
+        control_store=control_store,
+        notifier=notifier,
+        clock=lambda: datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        account_status_provider=failing_provider,
+        transport=transport,
+    )
+
+    poller.poll()
+
+    state = control_store.load()
+    assert state.mode is RunnerControlMode.RUNNING
+    assert state.telegram_update_offset == 27
+    assert len(notifier.notifications) == 1
+    assert notifier.notifications[0].subject == "AutoTrade account performance [FAILED]"
+    assert "broker unavailable" in notifier.notifications[0].body
+
+
+def test_telegram_control_poller_ignores_pause_when_runner_control_disabled(
+    tmp_path,
+) -> None:
+    control_store = FileRunnerControlStore(tmp_path / "runner_control.json")
+    notifier = RecordingNotifier()
+
+    def transport(request):
+        del request
+        return TelegramHttpResponse(
+            status=200,
+            body=json.dumps(
+                {
+                    "ok": True,
+                    "result": [
+                        {
+                            "update_id": 27,
+                            "message": {
+                                "chat": {"id": "-100base"},
+                                "text": "/pause",
+                            },
+                        },
+                        {
+                            "update_id": 28,
+                            "message": {
+                                "chat": {"id": "-100base"},
+                                "text": "/account",
+                            },
+                        },
+                    ],
+                }
+            ).encode("utf-8"),
+            headers={},
+        )
+
+    poller = TelegramControlPoller(
+        settings=TelegramSettings(
+            enabled=True,
+            bot_token="bot-token",
+            chat_id="-100base",
+        ),
+        control_store=control_store,
+        notifier=notifier,
+        clock=lambda: datetime(2026, 4, 10, 9, 0, tzinfo=KST),
+        account_status_provider=lambda: "계좌 수익률: +1.23%",
+        runner_control_enabled=False,
+        transport=transport,
+    )
+
+    poller.poll()
+
+    state = control_store.load()
+    assert state.mode is RunnerControlMode.RUNNING
+    assert state.paused_by is None
+    assert state.telegram_update_offset == 29
+    assert len(notifier.notifications) == 1
+    assert notifier.notifications[0].subject == "AutoTrade account performance"
+
+
 def test_telegram_control_poller_persists_offset_when_ack_notification_fails(
     tmp_path,
 ) -> None:

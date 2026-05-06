@@ -28,6 +28,7 @@ _CONTROL_POLLER_FAILURE_LOG_INTERVAL_SECONDS = 300.0
 class TelegramControlCommand(StrEnum):
     PAUSE = "pause"
     RESUME = "resume"
+    ACCOUNT = "account"
 
 
 @dataclass(slots=True)
@@ -36,6 +37,8 @@ class TelegramControlPoller:
     control_store: FileRunnerControlStore
     notifier: Notifier
     clock: Callable[[], datetime]
+    account_status_provider: Callable[[], str] | None = None
+    runner_control_enabled: bool = True
     transport: Callable[[TelegramHttpRequest], TelegramHttpResponse] = (
         telegram_http_transport
     )
@@ -84,6 +87,7 @@ class TelegramControlPoller:
             command = _extract_control_command(
                 update,
                 allowed_chat_id=self.settings.chat_id,
+                runner_control_enabled=self.runner_control_enabled,
             )
             if command is None:
                 continue
@@ -99,11 +103,15 @@ class TelegramControlPoller:
         self,
         command: TelegramControlCommand,
     ) -> NotificationMessage:
+        if command is TelegramControlCommand.ACCOUNT:
+            return self._build_account_status_notification()
         timestamp = self.clock()
         if command is TelegramControlCommand.PAUSE:
             state = self.control_store.pause(timestamp=timestamp, source="telegram")
-        else:
+        elif command is TelegramControlCommand.RESUME:
             state = self.control_store.resume(timestamp=timestamp, source="telegram")
+        else:  # pragma: no cover - enum exhaustiveness guard
+            raise ValueError(f"unsupported telegram control command: {command}")
         return NotificationMessage(
             created_at=timestamp,
             severity=AlertSeverity.INFO,
@@ -114,6 +122,33 @@ class TelegramControlPoller:
                     "source=telegram",
                 )
             ),
+        )
+
+    def _build_account_status_notification(self) -> NotificationMessage:
+        timestamp = self.clock()
+        if self.account_status_provider is None:
+            return NotificationMessage(
+                created_at=timestamp,
+                severity=AlertSeverity.INFO,
+                subject="AutoTrade account performance [UNAVAILABLE]",
+                body="계좌 조회 provider가 설정되어 있지 않습니다.",
+            )
+        try:
+            body = self.account_status_provider()
+        except Exception as error:
+            logger.warning("telegram 계좌 조회 명령 처리에 실패했습니다. error=%s", error)
+            body = f"계좌 조회에 실패했습니다: {error}"
+            return NotificationMessage(
+                created_at=timestamp,
+                severity=AlertSeverity.INFO,
+                subject="AutoTrade account performance [FAILED]",
+                body=body,
+            )
+        return NotificationMessage(
+            created_at=timestamp,
+            severity=AlertSeverity.INFO,
+            subject="AutoTrade account performance",
+            body=body,
         )
 
     def _send_notification(self, notification: NotificationMessage) -> None:
@@ -223,6 +258,7 @@ def _extract_control_command(
     update: dict[str, object],
     *,
     allowed_chat_id: str,
+    runner_control_enabled: bool = True,
 ) -> TelegramControlCommand | None:
     message = update.get("message")
     if not isinstance(message, dict):
@@ -237,8 +273,10 @@ def _extract_control_command(
         return None
     token = text.strip().split(maxsplit=1)[0] if text.strip() else ""
     command_name = token.split("@", maxsplit=1)[0].casefold()
-    if command_name == "/pause":
+    if runner_control_enabled and command_name == "/pause":
         return TelegramControlCommand.PAUSE
-    if command_name == "/resume":
+    if runner_control_enabled and command_name == "/resume":
         return TelegramControlCommand.RESUME
+    if command_name in {"/account", "/balance"}:
+        return TelegramControlCommand.ACCOUNT
     return None

@@ -993,15 +993,40 @@ def test_build_telegram_control_poller_uses_dedicated_no_retry_notifier(
         max_retries=3,
     )
 
+    def account_status_provider() -> str:
+        return "계좌 수익률: +1.23%"
+
     poller = operations._build_telegram_control_poller(
         telegram_settings,
         control_store=control_store,
+        account_status_provider=account_status_provider,
     )
 
     assert poller is not None
     assert isinstance(poller, operations.BackgroundTelegramControlPoller)
     assert isinstance(poller.poller.notifier, operations.TelegramNotifier)
     assert poller.poller.notifier.settings.max_retries == 0
+    assert poller.poller.account_status_provider is account_status_provider
+
+
+def test_build_telegram_control_poller_keeps_account_query_when_control_disabled(
+    tmp_path,
+) -> None:
+    control_store = operations.FileRunnerControlStore(tmp_path / "runner_control.json")
+    telegram_settings = TelegramSettings(
+        enabled=True,
+        bot_token="bot-token",
+        chat_id="-10012345",
+        control_enabled=False,
+    )
+
+    poller = operations._build_telegram_control_poller(
+        telegram_settings,
+        control_store=control_store,
+    )
+
+    assert poller is not None
+    assert poller.poller.runner_control_enabled is False
 
 
 def test_is_last_trading_day_of_week_handles_friday_holiday() -> None:

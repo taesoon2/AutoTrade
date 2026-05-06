@@ -5,6 +5,7 @@ from csv import writer
 import json
 import logging
 import os
+from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import replace
@@ -237,6 +238,9 @@ def _handle_run_continuous(args: argparse.Namespace) -> int:
         telegram_control_poller = _build_telegram_control_poller(
             settings.telegram,
             control_store=services.control_store,
+            account_status_provider=lambda: render_account_performance(
+                services.broker_reader.get_account_performance()
+            ),
         )
         if telegram_control_poller is not None:
             telegram_control_poller.start()
@@ -1108,6 +1112,7 @@ def _build_telegram_control_poller(
     telegram_settings: TelegramSettings,
     *,
     control_store: FileRunnerControlStore,
+    account_status_provider: Callable[[], str] | None = None,
 ) -> BackgroundTelegramControlPoller | None:
     if not telegram_settings.enabled:
         return None
@@ -1117,6 +1122,8 @@ def _build_telegram_control_poller(
             control_store=control_store,
             notifier=TelegramNotifier(replace(telegram_settings, max_retries=0)),
             clock=lambda: datetime.now(KST),
+            account_status_provider=account_status_provider,
+            runner_control_enabled=telegram_settings.control_enabled,
         )
     )
 
